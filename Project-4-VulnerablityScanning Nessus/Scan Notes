@@ -1,0 +1,111 @@
+# Nessus Scan Notes
+## Setup, Configuration & Observations
+
+*Personal notes from running the scans — what I did, what worked, what didn't*
+
+---
+
+## Installation
+
+Getting Nessus running on Kali was straightforward compared to the OpenVAS route I tried first. OpenVAS hit a PostgreSQL version conflict — Kali ships PostgreSQL 18 and GVM expects 17, and the dependency chain to fix that got messy. Switched to Nessus Essentials which installed cleanly.
+
+```bash
+# Install
+sudo dpkg -i Nessus-10.8.3-debian10_amd64.deb
+
+# Start service
+sudo systemctl start nessusd
+
+# Access at
+https://127.0.0.1:8834
+```
+
+Registration required a free Tenable account for the activation code. Free tier covers up to 16 IPs which is more than enough for a home lab.
+
+On first launch Nessus downloads its plugin database — took around 15 minutes. After that the interface was ready.
+
+---
+
+## Scan Configuration
+
+**Scan type:** Basic Network Scan
+**Severity base:** CVSS v3.0
+**Scanner:** Local Scanner
+**Authentication:** None (unauthenticated scan)
+
+I ran both scans without credentials intentionally. An unauthenticated scan represents what an attacker with network access but no credentials would see. Authenticated scans go deeper — they log into the system and check installed software versions, registry settings, patch levels — but I wanted to simulate the external attacker perspective first.
+
+The difference matters: an unauthenticated scan found 24 vulnerabilities on the Windows machine. An authenticated scan of the same machine would likely find significantly more because Nessus could see inside the OS.
+
+---
+
+## Windows Workstation Scan (192.168.100.4)
+
+Started: May 21 at 11:35 PM
+Completed: May 21 at 11:53 PM
+Duration: 18 minutes
+
+The scan ran smoothly. Nessus identified the OS as Windows 11 from service fingerprinting which matched what the machine actually is — good sign that the detection is working correctly.
+
+Most of the findings came back as informational — Nessus enumerating what's running rather than finding exploitable vulnerabilities. The two medium findings around Splunk were the most actionable.
+
+One thing that stood out: Nessus flagged Splunk's self-signed SSL certificate on port 8089. This is the Splunk REST API / management port — the same port that came up in the Nmap scan in Project 2. Finding the same service from two different angles (port scanner and vulnerability scanner) reinforces the finding and makes it harder to dismiss.
+
+The NTLMSSP finding was interesting — Windows leaking the machine name during authentication attempts is technically informational, but it's exactly the kind of data an attacker would collect during reconnaissance before moving to exploitation.
+
+---
+
+## Metasploitable Scan (192.168.211.128)
+
+Started: May 22 at 12:30 AM
+Completed: May 22 at 12:48 AM
+Duration: 18 minutes
+
+The Metasploitable VM crashed once during setup and had to be restarted before the scan could run. Once it was stable the scan ran without issues.
+
+The findings came in fast. Within the first few minutes the vulnerability count was climbing past 20, 30, 40. Watching the donut chart fill up with red was a genuinely useful visual — it's one thing to know Metasploitable is vulnerable, it's another to watch Nessus discover 62 vulnerabilities in 18 minutes.
+
+The most significant moment was seeing the Bind Shell Backdoor finding come up with the output showing the `id` command result. Nessus didn't just detect a vulnerability — it connected to the backdoor and confirmed root access. That's Nessus functioning as a light-touch exploitation engine, not just a scanner. The output:
+
+```
+root@metasploitable:/# uid=0(root) gid=0(root) groups=0(root)
+```
+
+VNC default password was equally straightforward — Nessus tried "password" and got in. CVSS 10.0 is the right score for that. Full graphical desktop control with a one-word credential.
+
+The Ghostcat finding (CVE-2020-1745) was one I recognized from prior research. An EPSS score of 0.9447 means that vulnerability is being exploited in the wild with near certainty. Seeing it appear on a real scan made the EPSS scoring system feel relevant rather than theoretical.
+
+---
+
+## Observations on Unauthenticated vs Authenticated Scanning
+
+Running unauthenticated scans on both targets gives the attacker's perspective — what's visible from the network without any credentials. For Metasploitable this was devastating because the vulnerabilities are so severe they're detectable from outside.
+
+For the Windows machine, an authenticated scan would go deeper. With credentials, Nessus can:
+- Check Windows Update patch levels
+- Enumerate installed software versions against CVE databases
+- Check registry settings and local security policy
+- Inspect running processes and services
+
+That would likely surface more findings on the Windows machine. Something to explore in a follow-up scan.
+
+---
+
+## Nessus Features Worth Noting
+
+**Remediations Tab**
+After the Metasploitable scan completed, the Remediations tab appeared with two prioritized actions:
+1. Upgrade ISC BIND
+2. Upgrade Samba
+
+This is the kind of output you'd hand to a sysadmin — not a raw list of 62 vulnerabilities, but a prioritized action list. In a real SOC environment this feeds directly into the remediation tracking workflow.
+
+**EPSS Scoring**
+Several findings included EPSS (Exploit Prediction Scoring System) scores alongside CVSS. CVSS measures the theoretical severity of a vulnerability. EPSS measures the probability it's being actively exploited in the wild. Ghostcat's EPSS of 0.9447 tells you more about real-world urgency than CVSS alone.
+
+**VPR (Vulnerability Priority Rating)**
+Nessus's own scoring system that factors in threat intelligence, age of vulnerability, and exploit availability. Useful as a second opinion on which findings to prioritize when the CVSS scores are clustered together.
+
+---
+
+*Mwaura — May 2026*
